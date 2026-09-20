@@ -1,0 +1,13 @@
+# Java build output
+out/
+backend/out/
+*.class
+
+# Node / wrangler
+node_modules/
+.wrangler/
+.dev.vars
+.env
+
+*.log
+.DS_Store
