@@ -69,3 +69,24 @@ CREATE TABLE IF NOT EXISTS transactions (
 
 CREATE INDEX IF NOT EXISTS idx_transactions_sku_time
     ON transactions (sku, created_at DESC);
+
+-- Precomputed per-SKU analysis.
+--
+-- Why this table exists: a full analyseInventory() pass over the catalogue
+-- measures ~60 ms of CPU, and the Workers free plan allows 10 ms per request.
+-- Analysing one SKU costs ~2 ms, so the aggregate endpoints read finished
+-- results from here while single-SKU endpoints still compute live. Rows are
+-- refreshed wholesale by `npm run db:refresh` and per-SKU by the Worker
+-- whenever a buy or restock changes that item's stock.
+CREATE TABLE IF NOT EXISTS analysis_cache (
+    sku           text        PRIMARY KEY REFERENCES items (sku) ON DELETE CASCADE,
+    -- Whole Analysis object as returned by analyseInventory(), minus the item.
+    analysis      jsonb       NOT NULL,
+    -- Denormalised for cheap ORDER BY without unpacking the JSON.
+    risk_score    integer     NOT NULL DEFAULT 0,
+    abc           text        NOT NULL DEFAULT 'C' CHECK (abc IN ('A', 'B', 'C')),
+    computed_at   timestamptz NOT NULL DEFAULT now()
+);
+
+CREATE INDEX IF NOT EXISTS idx_analysis_risk
+    ON analysis_cache (risk_score DESC);
