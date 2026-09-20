@@ -595,6 +595,50 @@ function classifyABC(items) {
 /* ================================================================== */
 
 /**
+ * Runs the full pipeline for one item and returns its analysis record.
+ *
+ * `abcEntry` comes from classifyABC() over the whole catalogue, because ABC
+ * class and annual-margin share are relative measures — an item cannot be
+ * classified in isolation.
+ *
+ * Split out from analyseInventory() so a caller that needs a single SKU does
+ * not have to analyse the entire catalogue: the Cloudflare Worker analyses one
+ * item per request to stay inside its CPU budget, and shares this exact code
+ * path with the browser so the two cannot drift apart.
+ */
+function analyseItem(item, abcEntry, opts = {}) {
+  const fc = forecast(item.history, opts.horizon ?? 14);
+  const bt = backtest(item.history, 7, 6);
+  const policy = inventoryPolicy(item, fc, opts);
+  const expiry = expiryRisk(item, fc);
+  const anomalies = detectAnomalies(item.history);
+
+  // Composite risk score in [0,100]: blends stockout probability, expiry
+  // write-off exposure and forecast uncertainty, weighted by ABC class.
+  const classWeight = { A: 1.0, B: 0.75, C: 0.5 }[abcEntry.abc];
+  const expiryExposure = expiry
+    ? Math.min(1, expiry.writeOffValue / Math.max(1, item.stockValue))
+    : 0;
+  const cv = fc.dailyMean > 0 ? Math.min(1, fc.dailySigma / fc.dailyMean) : 0;
+  const riskScore = Math.round(
+    100 * classWeight * (0.55 * policy.stockoutProb + 0.3 * expiryExposure + 0.15 * cv)
+  );
+
+  return {
+    item,
+    forecast: fc,
+    backtest: bt,
+    policy,
+    expiry,
+    anomalies,
+    abc: abcEntry.abc,
+    annualMargin: abcEntry.annualMargin,
+    cumulativeShare: abcEntry.cumulativeShare,
+    riskScore,
+  };
+}
+
+/**
  * Runs the whole pipeline over the catalogue and returns a single analysis
  * record per item. This is what the UI renders.
  */
@@ -602,38 +646,7 @@ function analyseInventory(items, opts = {}) {
   const abc = classifyABC(items);
   const abcBySku = new Map(abc.map((a) => [a.item.sku, a]));
 
-  const analyses = items.map((item) => {
-    const fc = forecast(item.history, opts.horizon ?? 14);
-    const bt = backtest(item.history, 7, 6);
-    const policy = inventoryPolicy(item, fc, opts);
-    const expiry = expiryRisk(item, fc);
-    const anomalies = detectAnomalies(item.history);
-    const abcEntry = abcBySku.get(item.sku);
-
-    // Composite risk score in [0,100]: blends stockout probability, expiry
-    // write-off exposure and forecast uncertainty, weighted by ABC class.
-    const classWeight = { A: 1.0, B: 0.75, C: 0.5 }[abcEntry.abc];
-    const expiryExposure = expiry
-      ? Math.min(1, expiry.writeOffValue / Math.max(1, item.stockValue))
-      : 0;
-    const cv = fc.dailyMean > 0 ? Math.min(1, fc.dailySigma / fc.dailyMean) : 0;
-    const riskScore = Math.round(
-      100 * classWeight * (0.55 * policy.stockoutProb + 0.3 * expiryExposure + 0.15 * cv)
-    );
-
-    return {
-      item,
-      forecast: fc,
-      backtest: bt,
-      policy,
-      expiry,
-      anomalies,
-      abc: abcEntry.abc,
-      annualMargin: abcEntry.annualMargin,
-      cumulativeShare: abcEntry.cumulativeShare,
-      riskScore,
-    };
-  });
+  const analyses = items.map((item) => analyseItem(item, abcBySku.get(item.sku), opts));
 
   analyses.sort((a, b) => b.riskScore - a.riskScore);
   return analyses;
@@ -715,6 +728,7 @@ const AIEngine = {
   expiryRisk,
   detectAnomalies,
   classifyABC,
+  analyseItem,
   analyseInventory,
   classifyIntent,
   extractItem,
