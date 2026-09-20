@@ -80,8 +80,9 @@ place to put it is in the results, not in a footnote.
 ## Architecture
 
 ```
-web/                          browser front end — opens from the file system
+web/                          browser front end — also the deployed static assets
   index.html
+  assets/css/styles.css
   assets/js/
     data.js                   domain model + seeded demand generator
     ai-engine.js              forecasting, policy, expiry, anomalies, ABC, NLU
@@ -89,7 +90,20 @@ web/                          browser front end — opens from the file system
     assistant.js              intent → answer, generated from analysis objects
     app.js                    state, routing, rendering
 
-backend/                      dependency-free Java
+worker/                       Cloudflare Worker — the deployed JSON API
+  index.mjs                   route table and handlers
+  repository.mjs              Neon queries, rows → domain objects
+  analysis.mjs                response projections, cache serialisation
+
+db/schema.sql                 Neon Postgres schema
+scripts/
+  migrate.mjs                 apply the schema
+  seed.mjs                    load the catalogue from the shared generator
+  refresh.mjs                 precompute analysis_cache
+  autocommit.sh               commit + push as you edit
+
+backend/                      dependency-free Java — the reference implementation
+  build.sh
   src/com/inventory/
     model/                    InventoryItem (abstract) → Perishable / NonPerishable
     exception/                InsufficientStockException, ItemNotFoundException
@@ -101,6 +115,16 @@ backend/                      dependency-free Java
 
 docs/ALGORITHMS.md            the maths, with derivations
 ```
+
+Deployment lives in **[DEPLOY.md](DEPLOY.md)** — Cloudflare Workers for the
+site and API, Neon Postgres for storage, both on free tiers.
+
+### Why the engine exists three times over
+
+The JavaScript engine in `web/assets/js` is what the browser runs *and* what
+the Worker imports — the API does not reimplement the maths, it calls the same
+functions. The Java backend in `backend/` is the independent third
+implementation that the parity test checks those numbers against.
 
 ### Why the engine exists twice
 
