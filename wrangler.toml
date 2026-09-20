@@ -1,0 +1,31 @@
+# Cloudflare Worker — JSON API on Neon Postgres, plus the dashboard as static
+# assets. Everything here fits the free tiers:
+#
+#   Workers free    100,000 requests/day, 10ms CPU per request
+#   Static assets   unmetered, never billed, no request charge
+#   Neon free       0.5 GB storage, autosuspending compute, no card required
+#
+# Setup:
+#   npx wrangler login
+#   npx wrangler secret put DATABASE_URL     # Neon pooled connection string
+#   npm run db:migrate && npm run db:seed
+#   npm run deploy
+
+name = "ai-inventory-management-system"
+main = "worker/index.mjs"
+compatibility_date = "2026-09-20"
+# node_compat shims the APIs the Neon driver expects from Node.
+compatibility_flags = ["nodejs_compat"]
+
+[assets]
+directory = "./web"
+# The dashboard is a single page; asset requests are served before the Worker
+# runs, so /api/* is the only traffic that consumes the Workers quota.
+binding = "ASSETS"
+not_found_handling = "single-page-application"
+
+[observability]
+enabled = true
+
+# DATABASE_URL is a secret, never a var — set it with `wrangler secret put`
+# so the Neon credentials stay out of git.
