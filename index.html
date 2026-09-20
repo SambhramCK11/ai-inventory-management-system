@@ -1,0 +1,375 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>AI Inventory Management System</title>
+<meta name="description" content="Java inventory management system extended with a demand forecasting, stockout-risk and expiry-prediction engine.">
+<link rel="stylesheet" href="assets/css/styles.css">
+</head>
+<body>
+
+<!-- ============================================================== -->
+<!-- Login                                                           -->
+<!-- ============================================================== -->
+<div class="login-screen" id="loginScreen">
+  <div class="login-card">
+    <div class="brand">
+      <div class="brand-mark">AI</div>
+      <div>
+        <div class="brand-name">Inventory Intelligence</div>
+        <div class="brand-sub">Forecasting &amp; replenishment engine</div>
+      </div>
+    </div>
+
+    <h1>Sign in</h1>
+    <p>Two roles, as in the original system: the owner manages stock and sees the AI layer; the customer browses and buys.</p>
+
+    <form id="loginForm" autocomplete="off">
+      <div class="field">
+        <label for="username">Username</label>
+        <input type="text" id="username" value="admin" spellcheck="false">
+      </div>
+      <div class="field">
+        <label for="password">Password</label>
+        <input type="password" id="password" value="admin123">
+      </div>
+      <button class="btn full" type="submit">Sign in as owner</button>
+      <div class="form-error" id="loginError"></div>
+    </form>
+
+    <div class="login-divider">or</div>
+    <button class="btn ghost full" id="customerBtn" type="button">Continue as customer</button>
+
+    <p class="hint">Demo credentials <code>admin</code> / <code>admin123</code></p>
+  </div>
+</div>
+
+<!-- ============================================================== -->
+<!-- Owner application                                               -->
+<!-- ============================================================== -->
+<div class="app" id="ownerApp">
+  <header class="topbar">
+    <div class="brand">
+      <div class="brand-mark">AI</div>
+      <div>
+        <div class="brand-name">Inventory Intelligence</div>
+      </div>
+    </div>
+    <div class="topbar-spacer"></div>
+    <div class="user-chip">Signed in as <strong id="ownerName">admin</strong></div>
+    <button class="btn ghost small" id="ownerLogout" type="button">Sign out</button>
+  </header>
+
+  <nav class="tabs" id="ownerTabs">
+    <button class="tab active" data-view="dashboard">Dashboard</button>
+    <button class="tab" data-view="inventory">Inventory</button>
+    <button class="tab" data-view="forecast">Forecasting</button>
+    <button class="tab" data-view="replenishment">Replenishment</button>
+    <button class="tab" data-view="expiry">Expiry &amp; waste</button>
+    <button class="tab" data-view="anomalies">Anomalies</button>
+    <button class="tab" data-view="accuracy">Model accuracy</button>
+    <button class="tab" data-view="assistant">Assistant</button>
+  </nav>
+
+  <!-- Dashboard ------------------------------------------------- -->
+  <section class="view active" id="view-dashboard">
+    <div class="view-head">
+      <h2>Operations dashboard</h2>
+      <p>Every figure below is computed at page load from 200 days of demand history — no stored results.</p>
+    </div>
+    <div class="grid kpis" id="kpiRow"></div>
+
+    <div class="grid two mt">
+      <div class="card">
+        <div class="card-head">
+          <h3>Priority actions</h3>
+          <span class="sub">ranked by composite risk score</span>
+        </div>
+        <div id="priorityActions"></div>
+      </div>
+      <div class="card">
+        <div class="card-head">
+          <h3>Total demand, all SKUs</h3>
+          <span class="sub">last 60 days + 14-day forecast</span>
+        </div>
+        <div id="aggregateChart"></div>
+      </div>
+    </div>
+
+    <div class="grid two mt">
+      <div class="card">
+        <div class="card-head">
+          <h3>ABC classification</h3>
+          <span class="sub">Pareto by annualised gross margin</span>
+        </div>
+        <div id="abcChart"></div>
+      </div>
+      <div class="card">
+        <div class="card-head">
+          <h3>Risk matrix</h3>
+          <span class="sub">stockout probability vs days of cover</span>
+        </div>
+        <div id="riskMatrix"></div>
+      </div>
+    </div>
+  </section>
+
+  <!-- Inventory -------------------------------------------------- -->
+  <section class="view" id="view-inventory">
+    <div class="view-head">
+      <h2>Inventory</h2>
+      <p>The original CRUD surface — add, restock and remove items — with the model's read on each line.</p>
+    </div>
+
+    <div class="toolbar">
+      <input type="text" id="invSearch" placeholder="Search name or SKU…" spellcheck="false">
+      <select id="invCategory"><option value="">All categories</option></select>
+      <select id="invStatus">
+        <option value="">All statuses</option>
+        <option value="reorder">Needs reorder</option>
+        <option value="expiry">Expiry risk</option>
+        <option value="healthy">Healthy</option>
+      </select>
+      <div class="spacer"></div>
+      <button class="btn small" id="addItemBtn" type="button">+ Add item</button>
+    </div>
+
+    <div class="card">
+      <div class="table-wrap">
+        <table id="inventoryTable">
+          <thead>
+            <tr>
+              <th>Item</th><th>Category</th>
+              <th class="num">Qty</th><th class="num">Price</th>
+              <th class="num">Cover</th><th class="num">P(stockout)</th>
+              <th>ABC</th><th>Status</th><th></th>
+            </tr>
+          </thead>
+          <tbody></tbody>
+        </table>
+      </div>
+    </div>
+  </section>
+
+  <!-- Forecasting ------------------------------------------------ -->
+  <section class="view" id="view-forecast">
+    <div class="view-head">
+      <h2>Demand forecasting</h2>
+      <p>Holt-Winters triple exponential smoothing with weekly seasonality. Smoothing constants are grid-searched per SKU by minimising in-sample squared error; the band is a 95% prediction interval widened by the square root of the horizon.</p>
+    </div>
+
+    <div class="toolbar">
+      <select id="fcItem"></select>
+      <select id="fcHorizon">
+        <option value="7">7-day horizon</option>
+        <option value="14" selected>14-day horizon</option>
+        <option value="28">28-day horizon</option>
+      </select>
+    </div>
+
+    <div class="card">
+      <div class="card-head">
+        <h3 id="fcTitle">—</h3>
+        <span class="sub" id="fcParams"></span>
+      </div>
+      <div id="forecastChart"></div>
+    </div>
+
+    <div class="grid three mt" id="fcStats"></div>
+
+    <div class="card mt">
+      <div class="card-head"><h3>Model</h3></div>
+      <div class="formula">level_t  = α(y_t − s_{t−7}) + (1−α)(level_{t−1} + trend_{t−1})
+trend_t  = β(level_t − level_{t−1}) + (1−β)·trend_{t−1}
+s_t      = γ(y_t − level_t) + (1−γ)·s_{t−7}
+ŷ_{t+h}  = level_t + h·trend_t + s_{t+h−7}</div>
+      <p class="small muted mt">Additive seasonality is used rather than multiplicative: several SKUs have near-zero demand on some days, and multiplicative factors are undefined there.</p>
+    </div>
+  </section>
+
+  <!-- Replenishment ---------------------------------------------- -->
+  <section class="view" id="view-replenishment">
+    <div class="view-head">
+      <h2>Replenishment policy</h2>
+      <p>A continuous-review (Q, R) policy. Safety stock accounts for variance in demand <em>and</em> in supplier lead time — ignoring the second term is the usual reason a 95% target service level delivers about 80%.</p>
+    </div>
+
+    <div class="toolbar">
+      <label class="small muted" for="serviceLevel">Target service level</label>
+      <select id="serviceLevel">
+        <option value="0.90">90%</option>
+        <option value="0.95" selected>95%</option>
+        <option value="0.98">98%</option>
+        <option value="0.99">99%</option>
+      </select>
+      <span class="small dim" id="zNote"></span>
+    </div>
+
+    <div class="card">
+      <div class="card-head">
+        <h3>Purchase recommendations</h3>
+        <span class="sub" id="poSummary"></span>
+      </div>
+      <div class="table-wrap">
+        <table id="replenTable">
+          <thead>
+            <tr>
+              <th>Item</th><th class="num">On hand</th><th class="num">Daily demand</th>
+              <th class="num">Lead time</th><th class="num">Safety stock</th>
+              <th class="num">Reorder pt</th><th class="num">EOQ</th>
+              <th class="num">Order qty</th><th>Action</th>
+            </tr>
+          </thead>
+          <tbody></tbody>
+        </table>
+      </div>
+      <div class="formula">σ_DL = √( LT·σ_d²  +  d̄²·σ_LT² )       SS = z·σ_DL
+ROP  = d̄·LT + SS                      EOQ = √( 2·D·S / H )</div>
+    </div>
+  </section>
+
+  <!-- Expiry ----------------------------------------------------- -->
+  <section class="view" id="view-expiry">
+    <div class="view-head">
+      <h2>Expiry &amp; waste prediction</h2>
+      <p>For each perishable batch the model forecasts cumulative demand over the remaining shelf life and integrates the shortfall, giving an expected write-off in units and dollars rather than a binary expired/not-expired flag.</p>
+    </div>
+    <div class="grid kpis" id="expiryKpis"></div>
+    <div class="card mt">
+      <div class="card-head"><h3>Perishable batches</h3></div>
+      <div class="table-wrap">
+        <table id="expiryTable">
+          <thead>
+            <tr>
+              <th>Item</th><th class="num">Qty</th><th class="num">Days left</th>
+              <th class="num">Forecast demand</th><th class="num">Expected spoilage</th>
+              <th class="num">Write-off</th><th class="num">Suggested markdown</th><th>Status</th>
+            </tr>
+          </thead>
+          <tbody></tbody>
+        </table>
+      </div>
+      <div class="formula">E[spoilage] = σ_C·φ(k) + (Q − μ_C)·Φ(k),    k = (Q − μ_C)/σ_C
+μ_C = Σ ŷ_t over remaining shelf life,   σ_C = σ·√(days)</div>
+    </div>
+  </section>
+
+  <!-- Anomalies -------------------------------------------------- -->
+  <section class="view" id="view-anomalies">
+    <div class="view-head">
+      <h2>Anomaly detection</h2>
+      <p>A plain z-score flags every weekend as anomalous, because weekends genuinely sell more. The series is therefore decomposed into trend and weekly seasonality first, and the residual is scored with a MAD-based robust z — the median and MAD are not dragged around by the very outliers being searched for.</p>
+    </div>
+    <div class="grid kpis" id="anomalyKpis"></div>
+    <div class="card mt">
+      <div class="card-head">
+        <h3>Detected events</h3>
+        <span class="sub">|robust z| ≥ 3.0</span>
+      </div>
+      <div id="anomalyList"></div>
+    </div>
+  </section>
+
+  <!-- Accuracy --------------------------------------------------- -->
+  <section class="view" id="view-accuracy">
+    <div class="view-head">
+      <h2>Model accuracy</h2>
+      <p>Rolling-origin backtest. At six successive cut points the model is refitted on history only and asked for the next seven days, which are then compared with held-out actuals. Two baselines run on identical folds, because a forecast that cannot beat "same as last Tuesday" is not worth deploying.</p>
+    </div>
+    <div class="grid kpis" id="accuracyKpis"></div>
+
+    <div class="card mt">
+      <div class="card-head">
+        <h3>Per-SKU results</h3>
+        <span class="sub">skill = 1 − MAE_model / MAE_seasonal-naive</span>
+      </div>
+      <div class="table-wrap">
+        <table id="accuracyTable">
+          <thead>
+            <tr>
+              <th>Item</th><th class="num">MAPE</th><th class="num">MAE</th>
+              <th class="num">RMSE</th><th class="num">Bias</th>
+              <th class="num">Naive MAE</th><th class="num">Seasonal MAE</th>
+              <th class="num">Skill</th><th>Verdict</th>
+            </tr>
+          </thead>
+          <tbody></tbody>
+        </table>
+      </div>
+    </div>
+
+    <div class="card mt">
+      <div class="card-head"><h3>Reading these numbers</h3></div>
+      <p class="small muted">MAPE is reported with zero-demand days excluded, where the percentage error is undefined. Bias is mean error: positive means the model under-forecasts, which for an inventory system is the more expensive direction to be wrong in. Skill is the honest headline — it measures the model against the baseline a planner would otherwise use, not against zero.</p>
+    </div>
+  </section>
+
+  <!-- Assistant -------------------------------------------------- -->
+  <section class="view" id="view-assistant">
+    <div class="view-head">
+      <h2>Inventory assistant</h2>
+      <p>A keyword-weighted intent classifier over ten intents, with fuzzy entity matching against the live catalogue. Every answer is generated from the analysis objects above, so the assistant cannot state a number the dashboard does not also show.</p>
+    </div>
+    <div class="chat-shell">
+      <div class="card" style="padding:0; display:flex; flex-direction:column;">
+        <div class="chat-log" id="chatLog"></div>
+        <form class="chat-input" id="chatForm" autocomplete="off">
+          <input type="text" id="chatInput" placeholder="Ask about stock, forecasts, expiry, anomalies…" spellcheck="false">
+          <button class="btn" type="submit">Send</button>
+        </form>
+      </div>
+      <div>
+        <div class="small dim" style="margin-bottom:9px; font-weight:600; text-transform:uppercase; letter-spacing:.5px;">Try asking</div>
+        <div class="suggestions" id="suggestions"></div>
+      </div>
+    </div>
+  </section>
+</div>
+
+<!-- ============================================================== -->
+<!-- Customer application                                            -->
+<!-- ============================================================== -->
+<div class="app" id="customerApp">
+  <header class="topbar">
+    <div class="brand">
+      <div class="brand-mark">AI</div>
+      <div><div class="brand-name">Storefront</div></div>
+    </div>
+    <div class="topbar-spacer"></div>
+    <div class="user-chip">Browsing as <strong>customer</strong></div>
+    <button class="btn ghost small" id="customerLogout" type="button">Sign out</button>
+  </header>
+
+  <nav class="tabs">
+    <button class="tab active" data-view="shop">Shop</button>
+    <button class="tab" data-view="cart">Cart</button>
+  </nav>
+
+  <section class="view active" id="view-shop">
+    <div class="view-head">
+      <h2>Available items</h2>
+      <p>Stock levels are live — buying here decrements inventory and feeds straight back into the owner's risk figures.</p>
+    </div>
+    <div class="toolbar">
+      <input type="text" id="shopSearch" placeholder="Search items…" spellcheck="false">
+      <select id="shopCategory"><option value="">All categories</option></select>
+    </div>
+    <div class="shop-grid" id="shopGrid"></div>
+  </section>
+
+  <section class="view" id="view-cart">
+    <div class="view-head"><h2>Your purchases</h2></div>
+    <div class="card" id="cartCard"></div>
+  </section>
+</div>
+
+<div class="toast-host" id="toastHost"></div>
+
+<script src="assets/js/data.js"></script>
+<script src="assets/js/ai-engine.js"></script>
+<script src="assets/js/charts.js"></script>
+<script src="assets/js/assistant.js"></script>
+<script src="assets/js/app.js"></script>
+</body>
+</html>
