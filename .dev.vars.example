@@ -1,0 +1,10 @@
+# Copy to .dev.vars (git-ignored) for `wrangler dev` and the db:* scripts.
+#
+# Create a free Neon project at https://neon.tech — no card required — then
+# copy the *pooled* connection string from the dashboard. It looks like:
+#
+#   postgresql://user:password@ep-something-pooler.region.aws.neon.tech/dbname?sslmode=require
+#
+# The pooled host (note "-pooler") is the one to use: it keeps Neon's compute
+# suspended between bursts, which is what keeps the free tier free.
+DATABASE_URL=postgresql://user:password@ep-xxx-pooler.region.aws.neon.tech/neondb?sslmode=require
