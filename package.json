@@ -1,0 +1,20 @@
+{
+  "name": "ai-inventory-management-system",
+  "version": "1.0.0",
+  "private": true,
+  "description": "AI inventory management — Cloudflare Worker API on Neon Postgres, with the browser dashboard served as static assets.",
+  "scripts": {
+    "dev": "wrangler dev",
+    "deploy": "wrangler deploy",
+    "tail": "wrangler tail",
+    "db:migrate": "node scripts/migrate.mjs",
+    "db:seed": "node scripts/seed.mjs",
+    "test:backend": "bash backend/build.sh"
+  },
+  "dependencies": {
+    "@neondatabase/serverless": "^1.0.2"
+  },
+  "devDependencies": {
+    "wrangler": "^4.42.0"
+  }
+}
