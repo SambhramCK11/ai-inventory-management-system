@@ -9,6 +9,7 @@
     "tail": "wrangler tail",
     "db:migrate": "node scripts/migrate.mjs",
     "db:seed": "node scripts/seed.mjs",
+    "db:refresh": "node scripts/refresh.mjs",
     "test:backend": "bash backend/build.sh"
   },
   "dependencies": {
