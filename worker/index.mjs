@@ -97,129 +97,163 @@ const expiryIso = (value) =>
 /* Routes                                                              */
 /* ------------------------------------------------------------------ */
 
+/**
+ * Route table, matched before any database work happens.
+ *
+ * Matching first matters: connecting on every request meant an unknown path
+ * reported a database error instead of a 404, and it opened a connection for
+ * requests that never needed one.
+ */
+const ROUTES = [
+  ['GET', /^\/api\/health$/, health],
+  ['GET', /^\/api\/items$/, listItems],
+  ['GET', /^\/api\/items\/(.+)$/, getItem],
+  ['GET', /^\/api\/analysis$/, listAnalysis],
+  ['GET', /^\/api\/analysis\/(.+)$/, getAnalysis],
+  ['GET', /^\/api\/forecast\/(.+)$/, getForecast],
+  ['GET', /^\/api\/replenishment$/, listReplenishment],
+  ['GET', /^\/api\/expiry$/, listExpiry],
+  ['GET', /^\/api\/anomalies$/, listAnomalies],
+  ['GET', /^\/api\/accuracy$/, listAccuracy],
+  ['POST', /^\/api\/buy$/, (ctx) => recordMovement(ctx, 'buy')],
+  ['POST', /^\/api\/restock$/, (ctx) => recordMovement(ctx, 'restock')],
+];
+
 async function route(request, env) {
   const url = new URL(request.url);
   const { pathname } = url;
-  const method = request.method;
-  const sql = connect(env);
 
-  if (pathname === '/api/health') {
-    const [row] = await sql`SELECT count(*)::int AS skus FROM items`;
-    const [cache] = await sql`
-      SELECT count(*)::int AS rows, max(computed_at) AS computed_at FROM analysis_cache
-    `;
-    return json({
-      status: 'ok',
-      skus: row.skus,
-      analysisCached: cache.rows,
-      analysisComputedAt: cache.computed_at,
-      totalRevenue: await totalRevenue(sql),
-      engine: 'ai-engine.js (shared with the dashboard)',
+  let pathMatched = false;
+  for (const [method, pattern, handler] of ROUTES) {
+    const match = pattern.exec(pathname);
+    if (!match) continue;
+    pathMatched = true;
+    if (request.method !== method) continue;
+
+    if (!env.DATABASE_URL) {
+      throw new HttpError(
+        503,
+        'DATABASE_URL is not configured. Set it with: npx wrangler secret put DATABASE_URL'
+      );
+    }
+    return handler({
+      sql: connect(env),
+      url,
+      request,
+      // First capture group, percent-decoded — the SKU for every route that has one.
+      param: match[1] ? decodeURIComponent(match[1]) : undefined,
     });
   }
 
-  if (pathname === '/api/items' && method === 'GET') {
-    const inventory = await loadInventory(sql);
-    return json(inventory.map(itemJson));
+  if (pathMatched) {
+    throw new HttpError(405, `${request.method} is not allowed on ${pathname}`);
   }
+  throw new HttpError(404, `No route for ${request.method} ${pathname}`);
+}
 
-  if (pathname.startsWith('/api/items/') && method === 'GET') {
-    const sku = decodeURIComponent(pathname.slice('/api/items/'.length));
-    const item = await loadItem(sql, sku);
-    if (!item) throw notFound(sku);
-    return json(itemJson(item));
-  }
+async function health({ sql }) {
+  const [row] = await sql`SELECT count(*)::int AS skus FROM items`;
+  const [cache] = await sql`
+    SELECT count(*)::int AS rows, max(computed_at) AS computed_at FROM analysis_cache
+  `;
+  return json({
+    status: 'ok',
+    skus: row.skus,
+    analysisCached: cache.rows,
+    analysisComputedAt: cache.computed_at,
+    totalRevenue: await totalRevenue(sql),
+    engine: 'ai-engine.js (shared with the dashboard)',
+  });
+}
 
-  // Aggregate: served from analysis_cache, never computed here.
-  if (pathname === '/api/analysis' && method === 'GET') {
-    const rows = await cachedAnalyses(sql);
-    return json(
-      rows.map((r) => ({
-        sku: r.sku,
-        name: r.name,
-        riskScore: r.risk_score,
-        abc: r.abc,
-        computedAt: r.computed_at,
-        ...r.analysis,
-      }))
-    );
-  }
+async function listItems({ sql }) {
+  const inventory = await loadInventory(sql);
+  return json(inventory.map(itemJson));
+}
 
-  // Single SKU: analysed live, so it reflects stock changes immediately.
-  if (pathname.startsWith('/api/analysis/') && method === 'GET') {
-    const sku = decodeURIComponent(pathname.slice('/api/analysis/'.length));
-    const inventory = await loadInventory(sql);
-    const item = inventory.find((i) => i.sku === sku);
-    if (!item) throw notFound(sku);
+async function getItem({ sql, param: sku }) {
+  const item = await loadItem(sql, sku);
+  if (!item) throw notFound(sku);
+  return json(itemJson(item));
+}
 
-    const analysis = analyseOne(item, inventory, {
-      serviceLevel: Number(url.searchParams.get('service')) || undefined,
-    });
-    return json({ item: itemJson(item), ...forCache(analysis), live: true });
-  }
+// Aggregate: served from analysis_cache, never computed here.
+async function listAnalysis({ sql }) {
+  const rows = await cachedAnalyses(sql);
+  return json(
+    rows.map((r) => ({
+      sku: r.sku,
+      name: r.name,
+      riskScore: r.risk_score,
+      abc: r.abc,
+      computedAt: r.computed_at,
+      ...r.analysis,
+    }))
+  );
+}
 
-  if (pathname.startsWith('/api/forecast/') && method === 'GET') {
-    const sku = decodeURIComponent(pathname.slice('/api/forecast/'.length));
-    const horizon = intParam(url, 'horizon', { min: 1, max: 90, fallback: 14 });
-    const item = await loadItem(sql, sku);
-    if (!item) throw notFound(sku);
+// Single SKU: analysed live, so it reflects stock changes immediately.
+async function getAnalysis({ sql, url, param: sku }) {
+  const inventory = await loadInventory(sql);
+  const item = inventory.find((i) => i.sku === sku);
+  if (!item) throw notFound(sku);
 
-    const fc = engine.forecast(item.history, horizon);
-    return json({
-      sku: item.sku,
-      name: item.name,
-      horizon,
-      point: fc.point,
-      lower: fc.lower,
-      upper: fc.upper,
-      sigma: fc.sigma,
-      confidence: fc.confidence,
-      cumulative: fc.cumulative,
-      dailyMean: fc.dailyMean,
-      dailySigma: fc.dailySigma,
-      params: fc.params,
-    });
-  }
+  const analysis = analyseOne(item, inventory, {
+    serviceLevel: Number(url.searchParams.get('service')) || undefined,
+  });
+  return json({ item: itemJson(item), ...forCache(analysis), live: true });
+}
 
-  if (pathname === '/api/replenishment' && method === 'GET') {
-    const rows = await cachedAnalyses(sql);
-    return json(
-      rows.map((r) =>
-        replenishmentRow(r.sku, r.name, r.quantity, r.lead_time_days, r.analysis.policy)
+async function getForecast({ sql, url, param: sku }) {
+  const horizon = intParam(url, 'horizon', { min: 1, max: 90, fallback: 14 });
+  const item = await loadItem(sql, sku);
+  if (!item) throw notFound(sku);
+
+  const fc = engine.forecast(item.history, horizon);
+  return json({
+    sku: item.sku,
+    name: item.name,
+    horizon,
+    point: fc.point,
+    lower: fc.lower,
+    upper: fc.upper,
+    sigma: fc.sigma,
+    confidence: fc.confidence,
+    cumulative: fc.cumulative,
+    dailyMean: fc.dailyMean,
+    dailySigma: fc.dailySigma,
+    params: fc.params,
+  });
+}
+
+async function listReplenishment({ sql }) {
+  const rows = await cachedAnalyses(sql);
+  return json(
+    rows.map((r) =>
+      replenishmentRow(r.sku, r.name, r.quantity, r.lead_time_days, r.analysis.policy)
+    )
+  );
+}
+
+async function listExpiry({ sql }) {
+  const rows = await cachedAnalyses(sql);
+  return json(
+    rows
+      .filter((r) => r.analysis.expiry)
+      .map((r) =>
+        expiryRow(r.sku, r.name, r.quantity, expiryIso(r.expiry_date), r.analysis.expiry)
       )
-    );
-  }
+  );
+}
 
-  if (pathname === '/api/expiry' && method === 'GET') {
-    const rows = await cachedAnalyses(sql);
-    return json(
-      rows
-        .filter((r) => r.analysis.expiry)
-        .map((r) =>
-          expiryRow(r.sku, r.name, r.quantity, expiryIso(r.expiry_date), r.analysis.expiry)
-        )
-    );
-  }
+async function listAnomalies({ sql }) {
+  const rows = await cachedAnalyses(sql);
+  return json(rows.flatMap((r) => anomalyRows(r.sku, r.name, r.analysis.anomalies)));
+}
 
-  if (pathname === '/api/anomalies' && method === 'GET') {
-    const rows = await cachedAnalyses(sql);
-    return json(rows.flatMap((r) => anomalyRows(r.sku, r.name, r.analysis.anomalies)));
-  }
-
-  if (pathname === '/api/accuracy' && method === 'GET') {
-    const rows = await cachedAnalyses(sql);
-    return json(rows.map((r) => accuracyRow(r.sku, r.name, r.analysis.backtest)));
-  }
-
-  if (pathname === '/api/buy' && method === 'POST') {
-    return await recordMovement(sql, url, 'buy');
-  }
-
-  if (pathname === '/api/restock' && method === 'POST') {
-    return await recordMovement(sql, url, 'restock');
-  }
-
-  throw new HttpError(404, `No route for ${method} ${pathname}`);
+async function listAccuracy({ sql }) {
+  const rows = await cachedAnalyses(sql);
+  return json(rows.map((r) => accuracyRow(r.sku, r.name, r.analysis.backtest)));
 }
 
 /* ------------------------------------------------------------------ */
@@ -234,7 +268,7 @@ async function route(request, env) {
  * check and oversell. A zero-row result means either an unknown SKU or
  * insufficient stock, which the follow-up lookup tells apart.
  */
-async function recordMovement(sql, url, kind) {
+async function recordMovement({ sql, url }, kind) {
   const sku = url.searchParams.get('sku');
   if (!sku) throw new HttpError(400, "Missing required parameter 'sku'");
   const qty = intParam(url, 'qty', { required: true, min: 1, max: 1_000_000 });
